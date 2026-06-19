@@ -8,7 +8,7 @@ from google import genai
 from google.genai import types
 
 # Judul & caption halaman
-st.title("Chatbot Analitik PLN 2")
+st.title("Chatbot Analitik PLN")
 st.caption("Conversational Analytics - Streamlit Community Cloud")
 
 # Data contoh (anggap hasil query database)
