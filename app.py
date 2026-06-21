@@ -12,29 +12,45 @@ st.title("Chatbot Analitik PLN")
 st.caption("Conversational Analytics - Streamlit Community Cloud")
 
 # Data contoh (anggap hasil query database)
-DATA = pd.DataFrame({
-    "wilayah":      ["Jakarta", "Bandung", "Surabaya", "Medan", "Makassar"],  # wilayah
-    "pelanggan":    [1200, 870, 1010, 640, 520],                              # jumlah pelanggan
-    "konsumsi_mwh": [340, 250, 300, 180, 150],                               # konsumsi (MWh)
-    "gangguan":     [12, 9, 14, 7, 5],                                       # jumlah gangguan
-})
+assets = pd.read_csv("assets.csv")
+outages = pd.read_csv("outages.csv")
+
+DATA = outages.merge(
+    assets,
+    on="asset_id",
+    how="left"
+)
 
 # System prompt: persona + ATURAN + data (ramah saat disapa, akurat saat ditanya data)
-SYSTEM_PROMPT = f"""Anda adalah "Asisten Analitik PLN" yang ramah dan membantu.
+SYSTEM_PROMPT = f"""
+Anda adalah Asisten Analitik Aset dan Gangguan.
 
-ATURAN MENJAWAB:
-1. Jika pengguna menyapa atau basa-basi (mis. "halo", "hai", "terima kasih", "siapa kamu"),
-   balas ramah dan singkat. Boleh tawarkan 1-2 contoh pertanyaan tentang data.
-2. Jika pengguna bertanya tentang data, jawab ringkas berdasarkan TABEL DATA di bawah,
-   sebutkan satuan (MWh untuk konsumsi), lalu tutup dengan satu insight singkat.
-3. Jika pertanyaan di luar cakupan data, katakan dengan sopan bahwa datanya tidak tersedia.
-4. Jangan memaksakan analisis data pada sapaan/percakapan biasa.
-5. Selalu jawab dalam Bahasa Indonesia.
+Skema data:
 
-TABEL DATA (konsumsi dalam MWh):
+assets
+- asset_id
+- nama
+- jenis
+- lokasi
 
-{DATA.to_string(index=False)}
+outages
+- outage_id
+- asset_id
+- mulai
+- selesai
+- durasi_menit
+- penyebab
 
+Data gabungan:
+
+{DATA.head(100).to_string(index=False)}
+
+Aturan:
+1. Jawab berdasarkan data yang tersedia.
+2. Jika ditanya jumlah gangguan, gunakan data outage.
+3. Jika ditanya rata-rata durasi pemulihan, gunakan durasi_menit.
+4. Jika ditanya penyebab gangguan, gunakan kolom penyebab.
+5. Jawab dalam Bahasa Indonesia.
 """
 
 # Ambil API key dari Secrets Streamlit Community Cloud (Manage app -> Settings -> Secrets)
@@ -71,13 +87,20 @@ if "messages" not in st.session_state:
 
 # Fungsi bantu: tampilkan tabel/grafik sesuai jenis
 def tampilkan_visual(jenis):
-    if jenis == "table":
-        st.dataframe(DATA, use_container_width=True)
-    elif jenis == "chart":
-        st.bar_chart(DATA.set_index("wilayah")["konsumsi_mwh"])
-    elif jenis == "gangguan":
-        st.bar_chart(DATA.set_index("wilayah")["gangguan"])
 
+    if jenis == "table":
+        st.dataframe(DATA)
+
+    elif jenis == "penyebab":
+        st.bar_chart(
+            DATA["penyebab"].value_counts()
+        )
+
+    elif jenis == "aset":
+        st.bar_chart(
+            DATA.groupby("nama")
+                .size()
+        )
 # Gambar ulang riwayat percakapan
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
@@ -111,12 +134,15 @@ if prompt:
         jawaban = resp.text
 
     p = prompt.lower()                                  # cek kata kunci untuk visual
-    if "gangguan" in p:
-        show = "gangguan"
-    elif any(k in p for k in ["grafik", "chart"]):
-        show = "chart"
+    if "penyebab" in p:
+        show = "penyebab"
+
+    elif "aset" in p or "gardu" in p:
+        show = "aset"
+
     elif any(k in p for k in ["tabel", "data"]):
         show = "table"
+        
     else:
         show = None
     with st.chat_message("assistant"):
