@@ -123,20 +123,20 @@ if prompt:
     # Panggil Gemini (client tetap hidup karena disimpan di cache)
 
     with st.spinner("Menganalisis..."):
-    try:
-        resp = client.models.generate_content(
-            model=model,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                temperature=temperature,
-            ),
-        )
-        jawaban = resp.text
+        try:
+            resp = client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=temperature,
+                ),
+            )
+            jawaban = resp.text
 
-    except Exception as e:
-        st.error(f"Gemini Error: {str(e)}")
-        st.stop()
+        except Exception as e:
+            st.error(f"Gemini Error: {str(e)}")
+            st.stop()
 
     p = prompt.lower()                                  # cek kata kunci untuk visual
     if "penyebab" in p:
