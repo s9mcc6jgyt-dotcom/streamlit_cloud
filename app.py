@@ -1,157 +1,220 @@
-# Import library utama Streamlit
-import streamlit as st
-# Import pandas untuk data tabel
+import re
 import pandas as pd
-# Import client Gemini
+import matplotlib.pyplot as plt
+from sqlalchemy import text
 from google import genai
-# Import 'types' untuk konfigurasi (system prompt, temperature)
 from google.genai import types
 
-# Judul & caption halaman
-st.title("Chatbot Analitik PLN")
-st.caption("Conversational Analytics - Streamlit Community Cloud")
+# =====================================================
+# CONFIG
+# =====================================================
 
-# Data contoh (anggap hasil query database)
-assets = pd.read_csv("assets.csv")
-outages = pd.read_csv("outages.csv")
+GEMINI_API_KEY = "ISI_API_KEY"
+MODEL_NAME = "gemini-2.5-flash"
 
-DATA = outages.merge(
-    assets,
-    on="asset_id",
-    how="left"
-)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
-# System prompt: persona + ATURAN + data (ramah saat disapa, akurat saat ditanya data)
-SYSTEM_PROMPT = f"""
-Anda adalah Asisten Analitik Aset dan Gangguan.
+# =====================================================
+# SCHEMA
+# =====================================================
 
-Skema data:
-
-assets
+SCHEMA_STR = """
+Table assets
 - asset_id
 - nama
 - jenis
 - lokasi
 
-outages
+Table outages
 - outage_id
 - asset_id
 - mulai
 - selesai
 - durasi_menit
 - penyebab
-
-Data gabungan:
-
-{DATA.head(100).to_string(index=False)}
-
-Aturan:
-1. Jawab berdasarkan data yang tersedia.
-2. Jika ditanya jumlah gangguan, gunakan data outage.
-3. Jika ditanya rata-rata durasi pemulihan, gunakan durasi_menit.
-4. Jika ditanya penyebab gangguan, gunakan kolom penyebab.
-5. Jawab dalam Bahasa Indonesia.
 """
 
-# Ambil API key dari Secrets Streamlit Community Cloud (Manage app -> Settings -> Secrets)
-try:
-    api_key = st.secrets["GOOGLE_API_KEY"]              # baca dari panel Secrets
-except Exception:
-    api_key = ""                                        # kosong bila belum diset
+# =====================================================
+# PROMPT BUILDER
+# =====================================================
 
-# --- Sidebar: panel pengaturan (tanpa input API key) ---
-with st.sidebar:
-    st.subheader("Pengaturan")                          # judul kecil
-    model = st.selectbox("Model", ["gemini-2.5-flash", "gemini-2.5-flash-lite"])  # pilih model
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.1)  # kreativitas jawaban
-    st.caption("Tekan Reset untuk menghapus riwayat percakapan.")  # catatan kecil
-    if st.button("Reset"):                              # tombol reset percakapan
-        st.session_state.messages = []                  # kosongkan riwayat
-        st.rerun()
+def build_prompt(question: str) -> str:
 
-# Hentikan bila API key belum diset di Secrets
-if not api_key:
-    st.error("GOOGLE_API_KEY belum diset di panel Secrets (Manage app -> Settings -> Secrets).")
-    st.stop()
+    prompt = f"""
+Anda adalah generator SQL PostgreSQL.
 
-# Buat client Gemini SEKALI dan simpan di cache (mencegah error "client has been closed"
-# yang muncul bila client dibuat ulang setiap kali Streamlit menjalankan ulang skrip).
-@st.cache_resource
-def get_client(key):
-    return genai.Client(api_key=key)                    # objek koneksi ke Gemini
-client = get_client(api_key)                            # ambil client dari cache
+Schema database:
 
-# Riwayat percakapan (disimpan agar bertahan antar-rerun)
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+{SCHEMA_STR}
 
-# Fungsi bantu: tampilkan tabel/grafik sesuai jenis
-def tampilkan_visual(jenis):
+Aturan:
+1. Hanya buat query PostgreSQL.
+2. Hanya boleh SELECT.
+3. Jangan gunakan INSERT, UPDATE, DELETE, DROP, ALTER, CREATE.
+4. Jangan berikan penjelasan.
+5. Jangan gunakan markdown.
+6. Kembalikan satu query SQL saja.
 
-    if jenis == "table":
-        st.dataframe(DATA)
+Pertanyaan:
+{question}
 
-    elif jenis == "penyebab":
-        st.bar_chart(
-            DATA["penyebab"].value_counts()
+SQL:
+"""
+
+    return prompt
+
+# =====================================================
+# GENERATE SQL
+# =====================================================
+
+def generate_sql(question: str) -> str:
+
+    prompt = build_prompt(question)
+
+    resp = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0
+        )
+    )
+
+    sql = resp.text.strip()
+
+    sql = re.sub(r"```sql", "", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"```", "", sql)
+    sql = sql.strip()
+
+    return sql
+
+# =====================================================
+# VALIDATE SQL
+# =====================================================
+
+FORBIDDEN = [
+    "drop",
+    "delete",
+    "update",
+    "insert",
+    "alter",
+    "truncate",
+    "create",
+    "grant"
+]
+
+def validate_sql(sql: str) -> bool:
+
+    if not sql:
+        return False
+
+    cleaned = sql.strip().lower()
+
+    if not cleaned.startswith("select"):
+        return False
+
+    for word in FORBIDDEN:
+        if word in cleaned:
+            return False
+
+    statements = [
+        s.strip()
+        for s in sql.split(";")
+        if s.strip()
+    ]
+
+    if len(statements) > 1:
+        return False
+
+    return True
+
+# =====================================================
+# RUN SQL
+# =====================================================
+
+def run_sql(sql: str):
+
+    with engine.connect() as conn:
+        df = pd.read_sql(
+            text(sql),
+            conn
         )
 
-    elif jenis == "aset":
-        st.bar_chart(
-            DATA.groupby("nama")
-                .size()
-        )
-# Gambar ulang riwayat percakapan
-for m in st.session_state.messages:
-    with st.chat_message(m["role"]):
-        st.write(m["content"])
-        tampilkan_visual(m.get("show"))
+    return df
 
-# Kotak input chat
-prompt = st.chat_input("Tanya tentang data...")
-if prompt:
-    st.session_state.messages.append({"role": "user", "content": prompt})  # simpan pesan user
-    with st.chat_message("user"):
-        st.write(prompt)
+# =====================================================
+# VISUALIZE
+# =====================================================
 
-    # Susun SELURUH riwayat menjadi 'contents' agar model punya MEMORI percakapan
-    contents = []
-    for h in st.session_state.messages:                 # untuk tiap pesan tersimpan
-        peran = "user" if h["role"] == "user" else "model"   # peta peran ke format Gemini
-        contents.append(types.Content(role=peran, parts=[types.Part(text=h["content"])]))
+def visualize(df: pd.DataFrame):
 
-    # Panggil Gemini (client tetap hidup karena disimpan di cache)
+    if df.empty:
+        print("Tidak ada data.")
+        return
 
-    with st.spinner("Menganalisis..."):
-        try:
-            resp = client.models.generate_content(
-                model=model,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=temperature,
-                ),
-            )
-            jawaban = resp.text
+    if len(df.columns) != 2:
+        print(df)
+        return
 
-        except Exception as e:
-            st.error(f"Gemini Error: {str(e)}")
-            st.stop()
+    col1 = df.columns[0]
+    col2 = df.columns[1]
 
-    p = prompt.lower()                                  # cek kata kunci untuk visual
-    if "penyebab" in p:
-        show = "penyebab"
+    if pd.api.types.is_numeric_dtype(df[col2]):
 
-    elif "aset" in p or "gardu" in p:
-        show = "aset"
+        plt.figure(figsize=(8,4))
 
-    elif any(k in p for k in ["tabel", "data"]):
-        show = "table"
-        
+        if (
+            "tanggal" in col1.lower()
+            or "bulan" in col1.lower()
+            or pd.api.types.is_datetime64_any_dtype(df[col1])
+        ):
+            plt.plot(df[col1], df[col2])
+        else:
+            plt.bar(df[col1], df[col2])
+
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.show()
+
     else:
-        show = None
-    with st.chat_message("assistant"):
-        st.write(jawaban)
-        tampilkan_visual(show)
+        print(df)
 
-    st.session_state.messages.append({"role": "assistant", "content": jawaban, "show": show})
+# =====================================================
+# ASK PIPELINE
+# =====================================================
+
+def ask(question: str):
+
+    sql = generate_sql(question)
+
+    if not validate_sql(sql):
+
+        print("SQL pertama tidak valid. Regenerate...")
+
+        sql = generate_sql(question)
+
+        if not validate_sql(sql):
+            print("Gagal menghasilkan SQL yang aman.")
+            return
+
+    print("\nSQL:")
+    print(sql)
+
+    try:
+
+        df = run_sql(sql)
+
+        print("\nHASIL:")
+        print(df.head())
+
+        visualize(df)
+
+    except Exception as e:
+
+        print("Error eksekusi SQL:")
+        print(str(e))
+
+# =====================================================
+# EXAMPLE
+# =====================================================
+
+ask("Berapa jumlah gangguan berdasarkan penyebab?")
