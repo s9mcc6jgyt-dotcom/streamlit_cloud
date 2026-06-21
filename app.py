@@ -165,7 +165,19 @@ def generate_sql(question: str) -> str:
         )
     )
 
-    sql = resp.text.strip()
+    try:
+        sql = resp.text
+    except:
+        sql = None
+
+    if not sql:
+
+        try:
+            sql = resp.candidates[0].content.parts[0].text
+        except:
+            raise Exception(
+                f"Gagal mengambil output Gemini.\nResponse: {resp}"
+            )
 
     sql = sql.replace("```sql", "")
     sql = sql.replace("```", "")
